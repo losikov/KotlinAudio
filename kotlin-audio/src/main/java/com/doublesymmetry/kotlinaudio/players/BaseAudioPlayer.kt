@@ -1,9 +1,12 @@
 package com.doublesymmetry.kotlinaudio.players
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.media.AudioManager
 import android.media.AudioManager.AUDIOFOCUS_LOSS
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.ResultReceiver
 import android.support.v4.media.RatingCompat
@@ -440,6 +443,16 @@ abstract class BaseAudioPlayer internal constructor(
 
     public fun getMediaSessionToken(): MediaSessionCompat.Token {
         return mediaSession.sessionToken
+    }
+
+    /**
+     * Set the PendingIntent for the Activity that should be launched when the user interacts with the media session.
+     * This allows Google Assistant to launch the Activity when needed, rather than the service launching it directly.
+     * 
+     * @param pendingIntent The PendingIntent for the Activity to launch (typically MainActivity)
+     */
+    public fun setSessionActivity(pendingIntent: PendingIntent) {
+        mediaSession.setSessionActivity(pendingIntent)
     }
 
     private fun createForwardingPlayer(): ForwardingPlayer {
