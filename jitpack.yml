@@ -1,2 +1,4 @@
 jdk:
   - openjdk17
+before_install:
+  - sed -i '/include.*kotlin-audio-example/d' settings.gradle
