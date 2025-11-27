@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.ResultReceiver
 import android.support.v4.media.RatingCompat
 import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import androidx.annotation.CallSuper
 import androidx.core.content.ContextCompat
 import androidx.media.AudioAttributesCompat
@@ -238,11 +239,42 @@ abstract class BaseAudioPlayer internal constructor(
             .build()
 
         mediaSession.isActive = true
+        mediaSession.setFlags(
+            MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+            MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+        )
 
         val playerToUse =
             if (playerConfig.interceptPlayerActionsTriggeredExternally) createForwardingPlayer() else exoPlayer
 
         mediaSession.setCallback(object: MediaSessionCompat.Callback() {
+            // ===== PREPARE Actions (for reduced latency) =====
+            override fun onPrepare() {
+                Timber.tag("GVATest").d("MediaSessionCompat.Callback.onPrepare called")
+                // Prepare current media if available (without playing)
+                if (exoPlayer.mediaItemCount > 0) {
+                    exoPlayer.prepare()
+                    exoPlayer.playWhenReady = false
+                }
+            }
+            
+            override fun onPrepareFromMediaId(mediaId: String?, extras: Bundle?) {
+                Timber.tag("GVATest").d("MediaSessionCompat.Callback.onPrepareFromMediaId called: %s", mediaId)
+                // PREPARE: Load media and prepare, but don't play
+                mediaSessionCallback.handlePrepareFromMediaId(mediaId, extras)
+            }
+            
+            override fun onPrepareFromSearch(query: String?, extras: Bundle?) {
+                Timber.tag("GVATest").d("MediaSessionCompat.Callback.onPrepareFromSearch called: %s", query)
+                // PREPARE: Load media and prepare, but don't play
+                mediaSessionCallback.handlePrepareFromSearch(query, extras)
+            }
+            
+            // ===== PLAY Actions =====
+            override fun onPlay() {
+                playerToUse.play()
+            }
+            
             override fun onPlayFromMediaId(mediaId: String?, extras: Bundle?) {
                 Timber.tag("GVATest").d("playing from mediaID: %s", mediaId)
                 mediaSessionCallback.handlePlayFromMediaId(mediaId, extras)
@@ -253,25 +285,33 @@ abstract class BaseAudioPlayer internal constructor(
                 Timber.tag("GVATest").d("playing from query: %s", query)
                 mediaSessionCallback.handlePlayFromSearch(query, extras)
             }
-            // https://stackoverflow.com/questions/53837783/selecting-media-item-in-android-auto-queue-does-nothing
-            override fun onSkipToQueueItem(id: Long) {
-                mediaSessionCallback.handleSkipToQueueItem(id)
-            }
-            // TODO: what's missing?
-            override fun onPlay() {
-                playerToUse.play()
-            }
-
+            
+            // ===== Playback Control Actions =====
             override fun onPause() {
                 playerToUse.pause()
             }
 
+            override fun onStop() {
+                playerToUse.stop()
+            }
+            
+            // ===== Queue Navigation Actions =====
             override fun onSkipToNext() {
                 playerToUse.seekToNext()
             }
 
             override fun onSkipToPrevious() {
                 playerToUse.seekToPrevious()
+            }
+            
+            // https://stackoverflow.com/questions/53837783/selecting-media-item-in-android-auto-queue-does-nothing
+            override fun onSkipToQueueItem(id: Long) {
+                mediaSessionCallback.handleSkipToQueueItem(id)
+            }
+            
+            // ===== Seek Actions =====
+            override fun onSeekTo(pos: Long) {
+                playerToUse.seekTo(pos)
             }
 
             override fun onFastForward() {
@@ -281,15 +321,8 @@ abstract class BaseAudioPlayer internal constructor(
             override fun onRewind() {
                 playerToUse.seekBack()
             }
-
-            override fun onStop() {
-                playerToUse.stop()
-            }
-
-            override fun onSeekTo(pos: Long) {
-                playerToUse.seekTo(pos)
-            }
-
+            
+            // ===== Rating Actions =====
             override fun onSetRating(rating: RatingCompat?) {
                 if (rating == null) return
                 playerEventHolder.updateOnPlayerActionTriggeredExternally(
@@ -308,6 +341,8 @@ abstract class BaseAudioPlayer internal constructor(
                     )
                 )
             }
+            
+            // ===== Custom Actions =====
             // see NotificationManager.kt. onRewind, onFastForward and onStop do not trigger.
             override fun onCustomAction(action: String?, extras: Bundle?) {
                 when (action) {
@@ -350,6 +385,54 @@ abstract class BaseAudioPlayer internal constructor(
             mediaSessionConnector.setMediaMetadataProvider {
                 notificationManager.getMediaMetadataCompat()
             }
+            
+            // Set PlaybackPreparer to handle PREPARE actions for reduced latency
+            mediaSessionConnector.setPlaybackPreparer(object : MediaSessionConnector.PlaybackPreparer {
+                override fun getSupportedPrepareActions(): Long {
+                    // Return bitmask of supported prepare actions
+                    return PlaybackStateCompat.ACTION_PREPARE or
+                           PlaybackStateCompat.ACTION_PREPARE_FROM_MEDIA_ID or
+                           PlaybackStateCompat.ACTION_PREPARE_FROM_SEARCH
+                }
+
+                override fun onCommand(
+                    player: com.google.android.exoplayer2.Player,
+                    command: String,
+                    extras: Bundle?,
+                    cb: ResultReceiver?
+                ): Boolean {
+                    // Handle custom commands if needed
+                    // Return false to indicate command was not handled
+                    return false
+                }
+
+                override fun onPrepare(playWhenReady: Boolean) {
+                    Timber.tag("GVATest").d("onPrepare called, playWhenReady: $playWhenReady")
+                    // Prepare current media if available (without automatically playing)
+                    if (exoPlayer.mediaItemCount > 0) {
+                        exoPlayer.prepare()
+                        // Only set playWhenReady if explicitly requested
+                        exoPlayer.playWhenReady = playWhenReady
+                    }
+                }
+
+                override fun onPrepareFromMediaId(mediaId: String, playWhenReady: Boolean, extras: Bundle?) {
+                    Timber.tag("GVATest").d("onPrepareFromMediaId called: $mediaId, playWhenReady: $playWhenReady")
+                    // PREPARE: Always prepare without playing (ignore playWhenReady from MediaSessionConnector)
+                    mediaSessionCallback.handlePrepareFromMediaId(mediaId, extras)
+                }
+
+                override fun onPrepareFromSearch(query: String, playWhenReady: Boolean, extras: Bundle?) {
+                    Timber.tag("GVATest").d("onPrepareFromSearch called: $query, playWhenReady: $playWhenReady")
+                    // PREPARE: Always prepare without playing (ignore playWhenReady from MediaSessionConnector)
+                    mediaSessionCallback.handlePrepareFromSearch(query, extras)
+                }
+
+                override fun onPrepareFromUri(uri: Uri, playWhenReady: Boolean, extras: Bundle?) {
+                    Timber.tag("GVATest").d("onPrepareFromUri called: $uri, playWhenReady: $playWhenReady")
+                    // Not implemented - app uses media IDs and search, not direct URIs
+                }
+            })
         }
 
         playerEventHolder.updateAudioPlayerState(AudioPlayerState.IDLE)
