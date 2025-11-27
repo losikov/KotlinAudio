@@ -720,9 +720,11 @@ abstract class BaseAudioPlayer internal constructor(
         val manager = ContextCompat.getSystemService(context, AudioManager::class.java)
 
         // Use same content type as ExoPlayer AudioAttributes to ensure consistency
+        // Note: Android's AudioAttributes API doesn't have a separate CONTENT_TYPE_AUDIOBOOK.
+        // Audiobooks should use CONTENT_TYPE_SPEECH since they are primarily spoken word content.
         val contentType = when (playerConfig.audioContentType) {
             AudioContentType.MUSIC -> CONTENT_TYPE_MUSIC
-            AudioContentType.SPEECH -> CONTENT_TYPE_SPEECH
+            AudioContentType.SPEECH -> CONTENT_TYPE_SPEECH  // Used for audiobooks, podcasts, etc.
             AudioContentType.SONIFICATION -> CONTENT_TYPE_SONIFICATION
             AudioContentType.MOVIE -> CONTENT_TYPE_MOVIE
             AudioContentType.UNKNOWN -> CONTENT_TYPE_MUSIC
