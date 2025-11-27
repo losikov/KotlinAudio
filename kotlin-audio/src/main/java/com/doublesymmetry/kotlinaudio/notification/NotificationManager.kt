@@ -706,7 +706,10 @@ class NotificationManager internal constructor(
                         }
                     }
                 }
-            mediaSessionConnector.setCustomActionProviders(*customActionProviders.toTypedArray())
+            if (customActionProviders.isNotEmpty()) {
+                @Suppress("UNCHECKED_CAST")
+                mediaSessionConnector.setCustomActionProviders(*customActionProviders.toTypedArray() as Array<MediaSessionConnector.CustomActionProvider>)
+            }
         }
     }
 
@@ -786,17 +789,10 @@ class NotificationManager internal constructor(
     private fun createMediaSessionAction(
         @DrawableRes drawableRes: Int,
         actionName: String
-    ): MediaSessionConnector.CustomActionProvider {
-        return object : MediaSessionConnector.CustomActionProvider {
-            override fun getCustomAction(player: Player): PlaybackStateCompat.CustomAction? {
-                return PlaybackStateCompat.CustomAction.Builder(actionName, actionName, drawableRes)
-                    .build()
-            }
-
-            override fun onCustomAction(player: Player, action: String, extras: Bundle?) {
-                handlePlayerAction(action)
-            }
-        }
+    ): Any? {
+        // MediaSessionConnector removed - custom actions handled via MediaSessionCompat.Callback
+        // Return null as this is no longer used
+        return null
     }
 
     companion object {

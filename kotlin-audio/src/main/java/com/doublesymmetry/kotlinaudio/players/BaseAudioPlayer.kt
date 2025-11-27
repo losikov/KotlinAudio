@@ -63,10 +63,6 @@ import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.Player.Listener
 import com.google.android.exoplayer2.audio.AudioAttributes
 import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector
-import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
-import com.google.android.exoplayer2.metadata.Metadata
-import com.google.android.exoplayer2.source.MediaSource
-import com.google.android.exoplayer2.source.ProgressiveMediaSource
 import com.google.android.exoplayer2.source.dash.DashMediaSource
 import com.google.android.exoplayer2.source.dash.DefaultDashChunkSource
 import com.google.android.exoplayer2.source.hls.HlsMediaSource
@@ -79,6 +75,10 @@ import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
 import com.google.android.exoplayer2.upstream.RawResourceDataSource
 import com.google.android.exoplayer2.upstream.cache.CacheDataSource
 import com.google.android.exoplayer2.upstream.cache.SimpleCache
+import com.google.android.exoplayer2.source.MediaSource
+import com.google.android.exoplayer2.source.ProgressiveMediaSource
+import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
+import com.google.android.exoplayer2.metadata.Metadata
 import com.google.android.exoplayer2.util.Util
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
@@ -183,7 +183,6 @@ abstract class BaseAudioPlayer internal constructor(
     var ratingType: Int = RatingCompat.RATING_NONE
         set(value) {
             field = value
-
             mediaSession.setRatingType(ratingType)
             mediaSessionConnector.setRatingCallback(object : MediaSessionConnector.RatingCallback {
                 override fun onCommand(
@@ -302,21 +301,91 @@ abstract class BaseAudioPlayer internal constructor(
             
             // ===== Queue Navigation Actions =====
             override fun onSkipToNext() {
-                playerToUse.seekToNext()
+                try {
+                    if (exoPlayer.hasNextMediaItem()) {
+                        playerToUse.seekToNext()
+                    } else {
+                        // No next item - report error for Assistant recognition
+                        setPlaybackStateError(
+                            PlaybackStateCompat.ERROR_CODE_END_OF_QUEUE,
+                            "No next item available"
+                        )
+                    }
+                } catch (e: Exception) {
+                    Timber.e(e, "Error in onSkipToNext")
+                    setPlaybackStateError(
+                        PlaybackStateCompat.ERROR_CODE_APP_ERROR,
+                        "Failed to skip to next: ${e.message}"
+                    )
+                }
             }
 
             override fun onSkipToPrevious() {
-                playerToUse.seekToPrevious()
+                try {
+                    if (exoPlayer.hasPreviousMediaItem()) {
+                        playerToUse.seekToPrevious()
+                    } else {
+                        // No previous item - report error for Assistant recognition
+                        setPlaybackStateError(
+                            PlaybackStateCompat.ERROR_CODE_END_OF_QUEUE,
+                            "No previous item available"
+                        )
+                    }
+                } catch (e: Exception) {
+                    Timber.e(e, "Error in onSkipToPrevious")
+                    setPlaybackStateError(
+                        PlaybackStateCompat.ERROR_CODE_APP_ERROR,
+                        "Failed to skip to previous: ${e.message}"
+                    )
+                }
             }
             
             // https://stackoverflow.com/questions/53837783/selecting-media-item-in-android-auto-queue-does-nothing
             override fun onSkipToQueueItem(id: Long) {
-                mediaSessionCallback.handleSkipToQueueItem(id)
+                try {
+                    val index = id.toInt()
+                    if (index >= 0 && index < exoPlayer.mediaItemCount) {
+                        mediaSessionCallback.handleSkipToQueueItem(id)
+                    } else {
+                        // Invalid queue index - report error
+                        setPlaybackStateError(
+                            PlaybackStateCompat.ERROR_CODE_APP_ERROR,
+                            "Invalid queue item index: $index"
+                        )
+                    }
+                } catch (e: Exception) {
+                    Timber.e(e, "Error in onSkipToQueueItem")
+                    setPlaybackStateError(
+                        PlaybackStateCompat.ERROR_CODE_APP_ERROR,
+                        "Failed to skip to queue item: ${e.message}"
+                    )
+                }
             }
             
             // ===== Seek Actions =====
             override fun onSeekTo(pos: Long) {
-                playerToUse.seekTo(pos)
+                try {
+                    val duration = exoPlayer.duration
+                    // Check if position is valid (duration might be C.TIME_UNSET if not loaded)
+                    if (pos >= 0 && (duration == C.TIME_UNSET || pos <= duration)) {
+                        playerToUse.seekTo(pos)
+                    } else if (duration != C.TIME_UNSET) {
+                        // Invalid seek position (only if duration is known) - report error
+                        setPlaybackStateError(
+                            PlaybackStateCompat.ERROR_CODE_APP_ERROR,
+                            "Invalid seek position: $pos (duration: $duration)"
+                        )
+                    } else {
+                        // Duration unknown, but position is non-negative - allow seek
+                        playerToUse.seekTo(pos)
+                    }
+                } catch (e: Exception) {
+                    Timber.e(e, "Error in onSeekTo")
+                    setPlaybackStateError(
+                        PlaybackStateCompat.ERROR_CODE_APP_ERROR,
+                        "Failed to seek: ${e.message}"
+                    )
+                }
             }
 
             override fun onFastForward() {
@@ -401,7 +470,7 @@ abstract class BaseAudioPlayer internal constructor(
                 }
 
                 override fun onCommand(
-                    player: com.google.android.exoplayer2.Player,
+                    player: Player,
                     command: String,
                     extras: Bundle?,
                     cb: ResultReceiver?
@@ -443,8 +512,38 @@ abstract class BaseAudioPlayer internal constructor(
         playerEventHolder.updateAudioPlayerState(AudioPlayerState.IDLE)
     }
 
+
     public fun getMediaSessionToken(): MediaSessionCompat.Token {
         return mediaSession.sessionToken
+    }
+
+    /**
+     * Sets PlaybackState error for Google Assistant recognition.
+     * Use this when actions fail or content is not available.
+     * 
+     * @param errorCode PlaybackStateCompat error code (e.g., ERROR_CODE_NOT_SUPPORTED, ERROR_CODE_APP_ERROR)
+     * @param errorMessage User-readable error message
+     */
+    public fun setPlaybackStateError(errorCode: Int, errorMessage: String) {
+        val playbackState = PlaybackStateCompat.Builder()
+            .setState(
+                PlaybackStateCompat.STATE_ERROR,
+                exoPlayer.currentPosition,
+                0f // playback speed
+            )
+            .setErrorMessage(errorCode, errorMessage)
+            .build()
+
+        mediaSession.setPlaybackState(playbackState)
+    }
+
+    /**
+     * Clears PlaybackState error and restores normal playback state.
+     * Call this when error is resolved and playback can continue.
+     */
+    public fun clearPlaybackStateError() {
+        // MediaSessionConnector will automatically update PlaybackState based on ExoPlayer state
+        // No explicit clearing needed - normal state updates will override error state
     }
 
     /**
@@ -948,6 +1047,127 @@ abstract class BaseAudioPlayer internal constructor(
             playerEventHolder.updatePlaybackError(_playbackError)
             playbackError = _playbackError
             playerState = AudioPlayerState.ERROR
+
+            // Update PlaybackState with error code and message for Assistant recognition
+            updatePlaybackStateWithError(error)
+        }
+
+        /**
+         * Maps ExoPlayer 2.19.1 error codes to PlaybackStateCompat error codes and updates MediaSession.
+         * This enables Google Assistant to recognize and handle errors appropriately.
+         */
+        private fun updatePlaybackStateWithError(error: PlaybackException) {
+            val errorCode = mapExoPlayerErrorToPlaybackStateError(error)
+            val errorMessage = error.message ?: "Playback error occurred"
+
+            val playbackState = PlaybackStateCompat.Builder()
+                .setState(
+                    PlaybackStateCompat.STATE_ERROR,
+                    exoPlayer.currentPosition,
+                    0f // playback speed
+                )
+                .setErrorMessage(errorCode, errorMessage)
+                .build()
+
+            mediaSession.setPlaybackState(playbackState)
+        }
+
+        /**
+         * Maps ExoPlayer 2.19.1 PlaybackException error codes to PlaybackStateCompat error codes.
+         * This mapping enables Google Assistant to recognize error types and provide appropriate feedback.
+         * Uses integer error codes to avoid compilation issues with missing constants.
+         */
+        private fun mapExoPlayerErrorToPlaybackStateError(error: PlaybackException): Int {
+            return when (error.errorCode) {
+                // Network/IO errors -> APP_ERROR
+                // ERROR_CODE_IO_UNSPECIFIED = 2000
+                2000,
+                // ERROR_CODE_IO_NETWORK_CONNECTION_FAILED = 2001
+                2001,
+                // ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT = 2002
+                2002,
+                // ERROR_CODE_IO_FILE_NOT_FOUND = 2005
+                2005,
+                // ERROR_CODE_IO_NO_PERMISSION = 2006
+                2006,
+                // ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED = 2007
+                2007 -> {
+                    PlaybackStateCompat.ERROR_CODE_APP_ERROR
+                }
+
+                // Timeout errors -> APP_ERROR
+                // ERROR_CODE_TIMEOUT = 1003
+                1003 -> {
+                    PlaybackStateCompat.ERROR_CODE_APP_ERROR
+                }
+
+                // Parsing errors -> APP_ERROR
+                // ERROR_CODE_PARSING_CONTAINER_MALFORMED = 3001
+                3001,
+                // ERROR_CODE_PARSING_MANIFEST_MALFORMED = 3002
+                3002,
+                // ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED = 3003
+                3003,
+                // ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED = 3004
+                3004 -> {
+                    PlaybackStateCompat.ERROR_CODE_APP_ERROR
+                }
+
+                // Decoding errors -> APP_ERROR
+                // ERROR_CODE_DECODER_INIT_FAILED = 4001
+                4001,
+                // ERROR_CODE_DECODER_QUERY_FAILED = 4002
+                4002,
+                // ERROR_CODE_DECODING_FAILED = 4003
+                4003,
+                // ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES = 4004
+                4004,
+                // ERROR_CODE_DECODING_FORMAT_UNSUPPORTED = 4005
+                4005 -> {
+                    PlaybackStateCompat.ERROR_CODE_APP_ERROR
+                }
+
+                // Audio track errors -> APP_ERROR
+                // ERROR_CODE_AUDIO_TRACK_INIT_FAILED = 5001
+                5001,
+                // ERROR_CODE_AUDIO_TRACK_WRITE_FAILED = 5002
+                5002 -> {
+                    PlaybackStateCompat.ERROR_CODE_APP_ERROR
+                }
+
+                // DRM errors -> APP_ERROR
+                // ERROR_CODE_DRM_SCHEME_UNSUPPORTED = 6001
+                6001,
+                // ERROR_CODE_DRM_PROVISIONING_FAILED = 6002
+                6002,
+                // ERROR_CODE_DRM_CONTENT_ERROR = 6003
+                6003,
+                // ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED = 6004
+                6004,
+                // ERROR_CODE_DRM_DISALLOWED_OPERATION = 6005
+                6005,
+                // ERROR_CODE_DRM_SYSTEM_ERROR = 6006
+                6006,
+                // ERROR_CODE_DRM_DEVICE_REVOKED = 6007
+                6007 -> {
+                    PlaybackStateCompat.ERROR_CODE_APP_ERROR
+                }
+
+                // Unknown/unspecified errors -> UNKNOWN_ERROR
+                // ERROR_CODE_UNSPECIFIED = 1000
+                1000,
+                // ERROR_CODE_REMOTE_ERROR = 1001
+                1001,
+                // ERROR_CODE_FAILED_RUNTIME_CHECK = 1004
+                1004 -> {
+                    PlaybackStateCompat.ERROR_CODE_UNKNOWN_ERROR
+                }
+
+                // Default fallback for any unmapped error codes
+                else -> {
+                    PlaybackStateCompat.ERROR_CODE_UNKNOWN_ERROR
+                }
+            }
         }
     }
 }
