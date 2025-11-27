@@ -6,7 +6,6 @@ import android.content.Intent
 import android.media.AudioManager
 import android.media.AudioManager.AUDIOFOCUS_LOSS
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.ResultReceiver
 import android.support.v4.media.RatingCompat
