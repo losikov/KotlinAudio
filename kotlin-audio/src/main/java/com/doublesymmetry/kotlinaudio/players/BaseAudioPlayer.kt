@@ -15,6 +15,9 @@ import androidx.annotation.CallSuper
 import androidx.core.content.ContextCompat
 import androidx.media.AudioAttributesCompat
 import androidx.media.AudioAttributesCompat.CONTENT_TYPE_MUSIC
+import androidx.media.AudioAttributesCompat.CONTENT_TYPE_SPEECH
+import androidx.media.AudioAttributesCompat.CONTENT_TYPE_SONIFICATION
+import androidx.media.AudioAttributesCompat.CONTENT_TYPE_MOVIE
 import androidx.media.AudioAttributesCompat.USAGE_MEDIA
 import androidx.media.AudioFocusRequestCompat
 import androidx.media.AudioManagerCompat
@@ -716,12 +719,21 @@ abstract class BaseAudioPlayer internal constructor(
 
         val manager = ContextCompat.getSystemService(context, AudioManager::class.java)
 
+        // Use same content type as ExoPlayer AudioAttributes to ensure consistency
+        val contentType = when (playerConfig.audioContentType) {
+            AudioContentType.MUSIC -> CONTENT_TYPE_MUSIC
+            AudioContentType.SPEECH -> CONTENT_TYPE_SPEECH
+            AudioContentType.SONIFICATION -> CONTENT_TYPE_SONIFICATION
+            AudioContentType.MOVIE -> CONTENT_TYPE_MOVIE
+            AudioContentType.UNKNOWN -> CONTENT_TYPE_MUSIC
+        }
+
         focus = AudioFocusRequestCompat.Builder(AUDIOFOCUS_GAIN)
             .setOnAudioFocusChangeListener(this)
             .setAudioAttributes(
                 AudioAttributesCompat.Builder()
                     .setUsage(USAGE_MEDIA)
-                    .setContentType(CONTENT_TYPE_MUSIC)
+                    .setContentType(contentType)
                     .build()
             )
             .setWillPauseWhenDucked(playerOptions.alwaysPauseOnInterruption)
