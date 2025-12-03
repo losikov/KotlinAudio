@@ -30,6 +30,7 @@ import com.doublesymmetry.kotlinaudio.models.NotificationButton
 import com.doublesymmetry.kotlinaudio.models.NotificationConfig
 import com.doublesymmetry.kotlinaudio.models.NotificationState
 import com.doublesymmetry.kotlinaudio.players.components.getAudioItemHolder
+import com.doublesymmetry.kotlinaudio.utils.UriUtils
 import com.google.android.exoplayer2.C
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector
@@ -41,6 +42,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import okhttp3.Headers
 import okhttp3.Headers.Companion.toHeaders
+import java.io.File
 
 class NotificationManager internal constructor(
     private val context: Context,
@@ -79,18 +81,32 @@ class NotificationManager internal constructor(
             val artwork = getMediaItemArtworkUrl()
             val headers = getNetworkHeaders()
             val holder = player.currentMediaItem?.getAudioItemHolder()
+            
             if (artwork != null && holder?.artworkBitmap == null) {
-                context.imageLoader.enqueue(
-                    ImageRequest.Builder(context)
-                        .data(artwork)
-                        .headers(headers)
-                        .target { result ->
-                            val resultBitmap = (result as BitmapDrawable).bitmap
-                            holder?.artworkBitmap = resultBitmap
-                            invalidate()
+                val artworkUri = Uri.parse(artwork)
+                when {
+                    // For file:// URIs, load synchronously (local file, fast)
+                    artworkUri.scheme == "file" -> {
+                        loadBitmapFromFileUri(artwork)?.let { bitmap ->
+                            holder?.artworkBitmap = bitmap
+                            return bitmap
                         }
-                        .build()
-                )
+                    }
+                    // For HTTP/HTTPS URLs, use Coil to load asynchronously
+                    artworkUri.scheme == "http" || artworkUri.scheme == "https" -> {
+                        context.imageLoader.enqueue(
+                            ImageRequest.Builder(context)
+                                .data(artwork)
+                                .headers(headers)
+                                .target { result ->
+                                    val resultBitmap = (result as BitmapDrawable).bitmap
+                                    holder?.artworkBitmap = resultBitmap
+                                    invalidate()
+                                }
+                                .build()
+                        )
+                    }
+                }
             }
             return iconPlaceholder
         }
@@ -120,16 +136,29 @@ class NotificationManager internal constructor(
             if (field != value) {
                 if (value?.artwork != null) {
                     notificationMetadataArtworkDisposable?.dispose()
-                    notificationMetadataArtworkDisposable = context.imageLoader.enqueue(
-                        ImageRequest.Builder(context)
-                            .data(value.artwork)
-                            .headers(headers)
-                            .target { result ->
-                                notificationMetadataBitmap = (result as BitmapDrawable).bitmap
+                    val artworkUri = Uri.parse(value.artwork)
+                    when {
+                        // For file:// URIs, load synchronously (local file, fast)
+                        artworkUri.scheme == "file" -> {
+                            loadBitmapFromFileUri(value.artwork)?.let { bitmap ->
+                                notificationMetadataBitmap = bitmap
                                 invalidate()
                             }
-                            .build()
-                    )
+                        }
+                        // For HTTP/HTTPS URLs, use Coil to load asynchronously
+                        artworkUri.scheme == "http" || artworkUri.scheme == "https" -> {
+                            notificationMetadataArtworkDisposable = context.imageLoader.enqueue(
+                                ImageRequest.Builder(context)
+                                    .data(value.artwork)
+                                    .headers(headers)
+                                    .target { result ->
+                                        notificationMetadataBitmap = (result as BitmapDrawable).bitmap
+                                        invalidate()
+                                    }
+                                    .build()
+                            )
+                        }
+                    }
                 }
             }
 
@@ -181,6 +210,26 @@ class NotificationManager internal constructor(
 
     private fun getNetworkHeaders(): Headers {
         return player.currentMediaItem?.getAudioItemHolder()?.audioItem?.options?.headers?.toHeaders() ?: Headers.Builder().build()
+    }
+
+    /**
+     * Loads a bitmap from a file:// URI synchronously.
+     * Returns the bitmap if successful, null otherwise.
+     */
+    private fun loadBitmapFromFileUri(fileUri: String): Bitmap? {
+        return try {
+            val uri = Uri.parse(fileUri)
+            val filePath = uri.path ?: return null
+            val file = File(filePath)
+            if (file.exists()) {
+                BitmapFactory.decodeFile(filePath)
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "Failed to load bitmap from file URI: $fileUri", e)
+            null
+        }
     }
 
     /**
@@ -354,9 +403,45 @@ class NotificationManager internal constructor(
                                 putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, it)
                             }
                         })
-                        setIconUri(mediaItem?.mediaMetadata?.artworkUri ?: Uri.parse(audioItemHolder?.audioItem?.artwork
-                            ?: ""))
-                        setIconBitmap(audioItemHolder?.artworkBitmap)
+                        // Convert URIs to content:// URIs for Android Auto compatibility
+                        // Android Auto requires content:// URIs for artwork, not HTTP/HTTPS URLs
+                        val artworkUri = mediaItem?.mediaMetadata?.artworkUri 
+                            ?: Uri.parse(audioItemHolder?.audioItem?.artwork ?: "")
+                        
+                        // Ensure bitmap is loaded for file:// URIs before converting to content://
+                        var artworkBitmap = audioItemHolder?.artworkBitmap
+                        if (artworkBitmap == null && artworkUri.scheme == "file") {
+                            artworkBitmap = loadBitmapFromFileUri(artworkUri.toString())
+                            if (artworkBitmap != null) {
+                                audioItemHolder?.artworkBitmap = artworkBitmap
+                            }
+                        }
+                        
+                        val finalArtworkUri = when {
+                            artworkUri.scheme == "file" -> {
+                                // Convert file:// to content:// for Android Auto compatibility
+                                val convertedUri = UriUtils.convertFileUriToContentUri(context, artworkUri.toString())
+                                if (convertedUri != null) {
+                                    Uri.parse(convertedUri)
+                                } else {
+                                    android.util.Log.w(TAG, "Failed to convert file:// URI to content://, using original: ${artworkUri}")
+                                    artworkUri
+                                }
+                            }
+                            artworkUri.scheme == "http" || artworkUri.scheme == "https" -> {
+                                // For HTTP/HTTPS URLs, try to find cached version and convert to content://
+                                val cachedUri = UriUtils.convertHttpUriToContentUri(context, artworkUri.toString())
+                                if (cachedUri != null) {
+                                    Uri.parse(cachedUri)
+                                } else {
+                                    // Fallback to HTTP/HTTPS URL (may not work in Android Auto)
+                                    artworkUri
+                                }
+                            }
+                            else -> artworkUri
+                        }
+                        setIconUri(finalArtworkUri)
+                        setIconBitmap(artworkBitmap)
                     }.build()
                 }
             }
@@ -796,6 +881,8 @@ class NotificationManager internal constructor(
     }
 
     companion object {
+        private const val TAG = "KotlinAudio-Notification"
+        
         // Due to the removal of rewind, forward, and stop buttons from the standard notification
         // controls in Android 13, custom actions are implemented to support them
         // https://developer.android.com/about/versions/13/behavior-changes-13#playback-controls
