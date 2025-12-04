@@ -134,13 +134,14 @@ class NotificationManager internal constructor(
             val headers = getNetworkHeaders()
 
             if (field != value) {
-                if (value?.artwork != null) {
+                val artwork = value?.artwork
+                if (artwork != null) {
                     notificationMetadataArtworkDisposable?.dispose()
-                    val artworkUri = Uri.parse(value.artwork)
+                    val artworkUri = Uri.parse(artwork)
                     when {
                         // For file:// URIs, load synchronously (local file, fast)
                         artworkUri.scheme == "file" -> {
-                            loadBitmapFromFileUri(value.artwork)?.let { bitmap ->
+                            loadBitmapFromFileUri(artwork)?.let { bitmap ->
                                 notificationMetadataBitmap = bitmap
                                 invalidate()
                             }
@@ -149,7 +150,7 @@ class NotificationManager internal constructor(
                         artworkUri.scheme == "http" || artworkUri.scheme == "https" -> {
                             notificationMetadataArtworkDisposable = context.imageLoader.enqueue(
                                 ImageRequest.Builder(context)
-                                    .data(value.artwork)
+                                    .data(artwork)
                                     .headers(headers)
                                     .target { result ->
                                         notificationMetadataBitmap = (result as BitmapDrawable).bitmap
