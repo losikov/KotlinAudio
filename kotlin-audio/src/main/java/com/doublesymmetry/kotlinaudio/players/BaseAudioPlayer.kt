@@ -219,6 +219,7 @@ abstract class BaseAudioPlayer internal constructor(
     private var focus: AudioFocusRequestCompat? = null
     private var hasAudioFocus = false
     private var wasDucking = false
+    private var isReinitializingAudioSession = false // Flag to prevent re-entrant calls
 
     private val mediaSession = MediaSessionCompat(context, "KotlinAudioPlayer")
     private val mediaSessionConnector = MediaSessionConnector(mediaSession)
@@ -276,7 +277,22 @@ abstract class BaseAudioPlayer internal constructor(
             
             // ===== PLAY Actions =====
             override fun onPlay() {
+                val wasAlreadyPlaying = exoPlayer.playWhenReady && exoPlayer.isPlaying
                 playerToUse.play()
+                
+                // If playback was already active when Android Auto sends play command,
+                // force audio session re-initialization (pause+play) to route audio to Android Auto.
+                // This is necessary because ExoPlayer 2.x doesn't automatically re-route audio
+                // when Android Auto connects while playback is active.
+                if (wasAlreadyPlaying) {
+                    scope.launch {
+                        kotlinx.coroutines.delay(300)
+                        if (exoPlayer.playWhenReady && (exoPlayer.playbackState == com.google.android.exoplayer2.Player.STATE_READY || 
+                            exoPlayer.playbackState == com.google.android.exoplayer2.Player.STATE_BUFFERING)) {
+                            ensureAudioSessionInitialized()
+                        }
+                    }
+                }
             }
             
             override fun onPlayFromMediaId(mediaId: String?, extras: Bundle?) {
@@ -678,7 +694,67 @@ abstract class BaseAudioPlayer internal constructor(
     }
 
     fun pause() {
+        abandonAudioFocusIfHeld()
         exoPlayer.pause()
+    }
+    
+    /**
+     * Ensures audio session is properly initialized when Android Auto connects/disconnects.
+     * Re-sets audio attributes and performs pause+play cycle to force ExoPlayer to re-route audio.
+     * 
+     * This is a workaround for ExoPlayer 2.x limitation where audio doesn't automatically
+     * re-route when Android Auto connects while playback is active.
+     */
+    fun ensureAudioSessionInitialized() {
+        if (isReinitializingAudioSession) {
+            return
+        }
+        
+        scope.launch {
+            val currentState = exoPlayer.playbackState
+            val playWhenReady = exoPlayer.playWhenReady
+            
+            if (playWhenReady && (currentState == Player.STATE_READY || currentState == Player.STATE_BUFFERING)) {
+                isReinitializingAudioSession = true
+                try {
+                    // Re-request audio focus if manually handling it
+                    if (!playerConfig.handleAudioFocus) {
+                        abandonAudioFocusIfHeld()
+                        kotlinx.coroutines.delay(100)
+                        requestAudioFocus()
+                        kotlinx.coroutines.delay(100)
+                    }
+                    
+                    // Re-set audio attributes to ensure proper routing
+                    val audioAttributes = AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA)
+                        .setContentType(
+                            when (playerConfig.audioContentType) {
+                                AudioContentType.MUSIC -> C.AUDIO_CONTENT_TYPE_MUSIC
+                                AudioContentType.SPEECH -> C.AUDIO_CONTENT_TYPE_SPEECH
+                                AudioContentType.SONIFICATION -> C.AUDIO_CONTENT_TYPE_SONIFICATION
+                                AudioContentType.MOVIE -> C.AUDIO_CONTENT_TYPE_MOVIE
+                                AudioContentType.UNKNOWN -> C.AUDIO_CONTENT_TYPE_UNKNOWN
+                            }
+                        )
+                        .build()
+                    exoPlayer.setAudioAttributes(audioAttributes, playerConfig.handleAudioFocus)
+                    
+                    // Force audio session re-initialization by pausing then resuming
+                    // This is necessary to force ExoPlayer to re-route audio to Android Auto
+                    val wasPlaying = exoPlayer.isPlaying
+                    if (wasPlaying) {
+                        exoPlayer.pause()
+                        kotlinx.coroutines.delay(50)
+                    }
+                    
+                    exoPlayer.play()
+                    kotlinx.coroutines.delay(200)
+                } finally {
+                    isReinitializingAudioSession = false
+                }
+            }
+        }
     }
 
     /**
@@ -688,6 +764,7 @@ abstract class BaseAudioPlayer internal constructor(
      */
     @CallSuper
     open fun stop() {
+        abandonAudioFocusIfHeld()
         playerState = AudioPlayerState.STOPPED
         exoPlayer.playWhenReady = false
         exoPlayer.stop()
@@ -851,10 +928,8 @@ abstract class BaseAudioPlayer internal constructor(
 
     private fun abandonAudioFocusIfHeld() {
         if (!hasAudioFocus) return
-        Timber.d("Abandoning audio focus...")
 
         val manager = ContextCompat.getSystemService(context, AudioManager::class.java)
-
         val result: Int = if (manager != null && focus != null) {
             AudioManagerCompat.abandonAudioFocusRequest(manager, focus!!)
         } else {
@@ -862,31 +937,68 @@ abstract class BaseAudioPlayer internal constructor(
         }
 
         hasAudioFocus = (result != AudioManager.AUDIOFOCUS_REQUEST_GRANTED)
+        
+        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            volumeMultiplier = 1f
+            wasDucking = false
+        }
     }
 
     override fun onAudioFocusChange(focusChange: Int) {
-        Timber.d("Audio focus changed")
         val isPermanent = focusChange == AUDIOFOCUS_LOSS
         val isPaused = when (focusChange) {
             AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> true
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> playerOptions.alwaysPauseOnInterruption
             else -> false
         }
+        
+        // Handle AUDIOFOCUS_GAIN - re-initialize audio session when focus is regained
+        // This is critical for Android Auto connect/disconnect scenarios where ExoPlayer
+        // may not properly re-initialize the audio session when routing changes
+        if (focusChange == AudioManager.AUDIOFOCUS_GAIN) {
+            hasAudioFocus = true
+            ensureAudioSessionInitialized()
+            
+            if (!playerConfig.handleAudioFocus) {
+                requestAudioFocus()
+            }
+        }
+        
+        // Handle transient focus loss - when Android Auto disconnects, re-initialize
+        // audio session to route to phone instead of pausing
+        var shouldContinueOnPhone = false
+        if (focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT && exoPlayer.playWhenReady) {
+            shouldContinueOnPhone = true
+            scope.launch {
+                kotlinx.coroutines.delay(150)
+                ensureAudioSessionInitialized()
+            }
+        }
+        
         if (!playerConfig.handleAudioFocus) {
-            if (isPermanent) abandonAudioFocusIfHeld()
-
-            val isDucking = focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK
-                    && !playerOptions.alwaysPauseOnInterruption
-            if (isDucking) {
-                volumeMultiplier = 0.5f
-                wasDucking = true
-            } else if (wasDucking) {
-                volumeMultiplier = 1f
-                wasDucking = false
+            when (focusChange) {
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                    if (!playerOptions.alwaysPauseOnInterruption) {
+                        volumeMultiplier = 0.5f
+                        wasDucking = true
+                    }
+                }
+                AudioManager.AUDIOFOCUS_GAIN -> {
+                    volumeMultiplier = 1f
+                    wasDucking = false
+                }
+                AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                    volumeMultiplier = 1f
+                    wasDucking = false
+                    if (isPermanent) {
+                        abandonAudioFocusIfHeld()
+                    }
+                }
             }
         }
 
-        playerEventHolder.updateOnAudioFocusChanged(isPaused, isPermanent)
+        val shouldPause = isPaused && !shouldContinueOnPhone
+        playerEventHolder.updateOnAudioFocusChanged(shouldPause, isPermanent)
     }
 
     companion object {
@@ -978,6 +1090,12 @@ abstract class BaseAudioPlayer internal constructor(
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             val pausedBecauseReachedEnd = reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM
             playerEventHolder.updatePlayWhenReadyChange(PlayWhenReadyChangeData(playWhenReady, pausedBecauseReachedEnd))
+            
+            // When playWhenReady becomes true, ensure audio session is properly initialized
+            // This fixes issues where Android Auto connects while audio is playing
+            if (playWhenReady && exoPlayer.playbackState == Player.STATE_READY) {
+                ensureAudioSessionInitialized()
+            }
         }
 
         /**
@@ -993,7 +1111,11 @@ abstract class BaseAudioPlayer internal constructor(
                     Player.EVENT_PLAYBACK_STATE_CHANGED -> {
                         val state = when (player.playbackState) {
                             Player.STATE_BUFFERING -> AudioPlayerState.BUFFERING
-                            Player.STATE_READY -> AudioPlayerState.READY
+                            Player.STATE_READY -> {
+                                // Don't call ensureAudioSessionInitialized here - it causes infinite loops
+                                // Only call it explicitly for Android Auto connection scenarios
+                                AudioPlayerState.READY
+                            }
                             Player.STATE_IDLE ->
                                 // Avoid transitioning to idle from error or stopped
                                 if (
@@ -1025,11 +1147,17 @@ abstract class BaseAudioPlayer internal constructor(
                     Player.EVENT_PLAY_WHEN_READY_CHANGED -> {
                         if (!player.playWhenReady && playerState != AudioPlayerState.STOPPED) {
                             playerState = AudioPlayerState.PAUSED
+                        } else if (player.playWhenReady && playerState == AudioPlayerState.PAUSED && player.playbackState == Player.STATE_READY) {
+                            // Don't call ensureAudioSessionInitialized here - it causes infinite loops
+                            // Only call it explicitly for Android Auto connection scenarios
+                            playerState = AudioPlayerState.PLAYING
                         }
                     }
                     Player.EVENT_IS_PLAYING_CHANGED -> {
                         if (player.isPlaying) {
                             playerState = AudioPlayerState.PLAYING
+                            // Don't call ensureAudioSessionInitialized here - it causes infinite loops
+                            // Only call it explicitly for Android Auto connection scenarios
                         }
                     }
                 }
