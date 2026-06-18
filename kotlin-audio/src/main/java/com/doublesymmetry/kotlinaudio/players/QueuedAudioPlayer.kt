@@ -202,10 +202,11 @@ class QueuedAudioPlayer(
     /**
      * Jump to an item in the queue.
      * @param index the index to jump to
+     * @param positionMs position within the item in milliseconds, or [C.TIME_UNSET] to start at the beginning
      */
-    fun jumpToItem(index: Int) {
+    fun jumpToItem(index: Int, positionMs: Long = C.TIME_UNSET) {
         try {
-            exoPlayer.seekTo(index, C.TIME_UNSET)
+            exoPlayer.seekTo(index, positionMs)
             exoPlayer.prepare()
         } catch (e: IllegalSeekPositionException) {
             throw Error("This item index $index does not exist. The size of the queue is ${queue.size} items.")
