@@ -79,6 +79,7 @@ import com.google.android.exoplayer2.upstream.cache.SimpleCache
 import com.google.android.exoplayer2.source.MediaSource
 import com.google.android.exoplayer2.source.ProgressiveMediaSource
 import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
+import com.google.android.exoplayer2.extractor.ExtractorsFactory
 import com.google.android.exoplayer2.metadata.Metadata
 import com.google.android.exoplayer2.util.Util
 import kotlinx.coroutines.MainScope
@@ -871,16 +872,7 @@ abstract class BaseAudioPlayer internal constructor(
         mediaItem: MediaItem,
         factory: DataSource.Factory
     ): ProgressiveMediaSource {
-        val extractors = DefaultExtractorsFactory()
-            // Seek by arithmetic when an MP3 has no seek table (our prayers)...
-            .setConstantBitrateSeekingEnabled(true)
-            // ...even if the response carries no Content-Length. Every file we serve is CBR.
-            .setConstantBitrateSeekingAlwaysEnabled(true)
-        // Neither flag applies when the file ships an `Info` frame with a table of contents, which
-        // every LAME/ffmpeg-encoded chapter does: ExoPlayer 2.19.1 then seeks through that 8-bit
-        // table and reports the requested time for audio that is up to several seconds away. See
-        // CbrMp3Extractor for the mechanism and the fix.
-        return ProgressiveMediaSource.Factory(factory, CbrMp3Extractor.wrapping(extractors))
+        return ProgressiveMediaSource.Factory(factory, progressiveExtractorsFactory())
             .createMediaSource(mediaItem)
     }
 
@@ -1010,6 +1002,27 @@ abstract class BaseAudioPlayer internal constructor(
 
     companion object {
         const val APPLICATION_NAME = "react-native-track-player"
+
+        /**
+         * The extractor stack every progressive source is built on.
+         *
+         * The two flags make ExoPlayer seek by arithmetic when an MP3 has no seek table (our
+         * prayers), even if the response carries no Content-Length — every file we serve is CBR.
+         * Neither applies when the file ships an `Info` frame with a table of contents, which
+         * every LAME/ffmpeg-encoded chapter does: ExoPlayer 2.19.1 then seeks through that 8-bit
+         * table and reports the requested time for audio that is up to several seconds away. See
+         * [CbrMp3Extractor] for the mechanism and the fix.
+         *
+         * Exposed so `CbrMp3SeekAccuracyTest` can measure the byte offsets *this* stack asks for,
+         * rather than a copy of it assembled in the test that could agree with itself while the
+         * player wiring drifts.
+         */
+        fun progressiveExtractorsFactory(): ExtractorsFactory {
+            val extractors = DefaultExtractorsFactory()
+                .setConstantBitrateSeekingEnabled(true)
+                .setConstantBitrateSeekingAlwaysEnabled(true)
+            return CbrMp3Extractor.wrapping(extractors)
+        }
     }
 
     inner class PlayerListener : Listener {

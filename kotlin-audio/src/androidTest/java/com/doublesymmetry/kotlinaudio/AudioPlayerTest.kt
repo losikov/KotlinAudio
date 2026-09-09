@@ -25,7 +25,8 @@ class AudioPlayerTest {
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
         testPlayer = QueuedAudioPlayer(
             appContext,
-            cacheConfig = CacheConfig(maxCacheSize = (1024 * 50).toLong(), identifier = testInfo.displayName)
+            cacheConfig = CacheConfig(maxCacheSize = (1024 * 50).toLong(), identifier = testInfo.displayName),
+            mediaSessionCallback = NoopMediaSessionCallback
         )
         runBlocking(Dispatchers.Main) {
             testPlayer.volume = 0f

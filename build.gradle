@@ -7,6 +7,14 @@ buildscript {
         maven { url 'https://jitpack.io' }
     }
     dependencies {
+        // D8 bundled with AGP 7.3.1 refuses to dex a `PermittedSubclasses` attribute — "Sealed
+        // classes are not supported as program classes" — and Kotlin 1.7.10 at jvmTarget 17 emits
+        // one for every `sealed class` in `models/`. That only bites when this project dexes its
+        // own library, which is exactly what `connectedAndroidTest` does, so the instrumented
+        // suite could not be built at all. A newer R8 on the buildscript classpath is the
+        // documented workaround; it changes nothing about the published AAR, whose classes.jar is
+        // dexed by the consuming app's own toolchain.
+        classpath 'com.android.tools:r8:8.2.42'
         classpath 'com.android.tools.build:gradle:7.3.1'
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.7.10"
         classpath "de.mannodermaus.gradle.plugins:android-junit5:1.8.2.0"

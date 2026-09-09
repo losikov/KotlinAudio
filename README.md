@@ -91,6 +91,35 @@ player.jumpToItem(index:) // Jumps to a certain item and loads that item.
  player.removeUpcomingItems() // Remove all items in nextItems.
 ```
 
+## Tests
+
+Instrumented tests need a running emulator or device:
+
+```bash
+./gradlew :kotlin-audio:connectedDebugAndroidTest
+# one class:
+./gradlew :kotlin-audio:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.doublesymmetry.kotlinaudio.CbrMp3SeekAccuracyTest
+```
+
+`CbrMp3SeekAccuracyTest` guards the constant-bitrate MP3 seeking in
+`players/components/CbrMp3Extractor.kt`. It plays a committed 5-minute CBR fixture through the same
+extractor stack `BaseAudioPlayer` uses, with a `DataSource.Factory` that records every byte offset
+requested, and asserts each seek fetches within one MPEG frame of `firstAudioFrame + t * bitrate / 8`.
+Measured on an API 30 emulator: within 33–309 bytes with the extractor, and up to 25465 bytes
+(1.59 s of audio) without it.
+
+Two notes on the build, both fixed here rather than worked around in the tests:
+
+- `com.android.tools:r8:8.2.42` is pinned on the buildscript classpath. The D8 that ships with AGP
+  7.3.1 refuses to dex a `PermittedSubclasses` attribute ("Sealed classes are not supported as
+  program classes"), which Kotlin 1.7.10 at `jvmTarget = 17` emits for every `sealed class` in
+  `models/` — so this project could not dex its own library for instrumentation. Nothing about the
+  published AAR changes; its `classes.jar` is dexed by the consuming app.
+- `AudioPlayerTest` and `QueuedAudioPlayerTest` now pass a `mediaSessionCallback`
+  (`utils/NoopMediaSessionCallback`). They had not been updated when the argument became required,
+  and the whole `androidTest` source set failed to compile without it.
+
 ## License
 
 KotinAudio is available under the MIT license. See the LICENSE file for more info.

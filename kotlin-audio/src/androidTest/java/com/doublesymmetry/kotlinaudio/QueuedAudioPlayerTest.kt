@@ -44,7 +44,8 @@ class QueuedAudioPlayerTest {
             cacheConfig = CacheConfig(
                 maxCacheSize = (1024 * 50).toLong(),
                 identifier = testInfo.displayName
-            )
+            ),
+            mediaSessionCallback = NoopMediaSessionCallback
         )
         runBlocking(Dispatchers.Main) {
             testPlayer.volume = 0f
@@ -96,7 +97,7 @@ class QueuedAudioPlayerTest {
         fun givenAddedTwoItemAndMovingFirstAboveSecond_thenShouldHaveMovedItem() =
             runBlocking(Dispatchers.Main) {
                 val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-                val audioPlayer = QueuedAudioPlayer(appContext)
+                val audioPlayer = QueuedAudioPlayer(appContext, mediaSessionCallback = NoopMediaSessionCallback)
 
                 audioPlayer.add(tracks[0])
                 audioPlayer.add(tracks[1])
