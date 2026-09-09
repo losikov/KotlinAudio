@@ -8,7 +8,6 @@ import com.google.android.exoplayer2.extractor.ExtractorsFactory
 import com.google.android.exoplayer2.extractor.ForwardingExtractorInput
 import com.google.android.exoplayer2.extractor.PositionHolder
 import com.google.android.exoplayer2.extractor.mp3.Mp3Extractor
-import java.io.IOException
 import timber.log.Timber
 
 /**
@@ -53,17 +52,20 @@ class CbrMp3Extractor(private val delegate: Mp3Extractor) : Extractor {
     private fun wrap(input: ExtractorInput): ExtractorInput = TocHidingInput(input)
 
     /**
-     * Locates the `Info` frame by peeking from the start of the stream. Runs once, on the first
-     * read or peek at position 0. Restores the peek position it found.
+     * Locates the `Info` frame by peeking from the start of the stream. Runs on the first read or
+     * peek at position 0 and, once it has an answer, never again. Restores the peek position it
+     * found.
+     *
+     * An I/O failure is not an answer. ExoPlayer cancels an in-flight load by interrupting the
+     * loader thread, which surfaces here as an IOException; it is rethrown so the extractor sees
+     * the same failure it would have seen without this wrapper, and the next attempt probes again.
      */
     private fun probe(input: ExtractorInput) {
-        probed = true
         val savedPeekOffset = (input.peekPosition - input.position).toInt()
         try {
             input.resetPeekPosition()
             infoFlagsPosition = findInfoFlags(input)
-        } catch (e: IOException) {
-            infoFlagsPosition = -1
+            probed = true
         } finally {
             input.resetPeekPosition()
             if (savedPeekOffset > 0) input.advancePeekPosition(savedPeekOffset)
