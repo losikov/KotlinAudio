@@ -43,6 +43,7 @@ import com.doublesymmetry.kotlinaudio.models.PlayerOptions
 import com.doublesymmetry.kotlinaudio.models.PositionChangedReason
 import com.doublesymmetry.kotlinaudio.models.WakeMode
 import com.doublesymmetry.kotlinaudio.notification.NotificationManager
+import com.doublesymmetry.kotlinaudio.players.components.CbrMp3Extractor
 import com.doublesymmetry.kotlinaudio.players.components.PlayerCache
 import com.doublesymmetry.kotlinaudio.players.components.getAudioItemHolder
 import com.doublesymmetry.kotlinaudio.utils.isUriLocalFile
@@ -870,10 +871,16 @@ abstract class BaseAudioPlayer internal constructor(
         mediaItem: MediaItem,
         factory: DataSource.Factory
     ): ProgressiveMediaSource {
-        return ProgressiveMediaSource.Factory(
-            factory, DefaultExtractorsFactory()
-                .setConstantBitrateSeekingEnabled(true)
-        )
+        val extractors = DefaultExtractorsFactory()
+            // Seek by arithmetic when an MP3 has no seek table (our prayers)...
+            .setConstantBitrateSeekingEnabled(true)
+            // ...even if the response carries no Content-Length. Every file we serve is CBR.
+            .setConstantBitrateSeekingAlwaysEnabled(true)
+        // Neither flag applies when the file ships an `Info` frame with a table of contents, which
+        // every LAME/ffmpeg-encoded chapter does: ExoPlayer 2.19.1 then seeks through that 8-bit
+        // table and reports the requested time for audio that is up to several seconds away. See
+        // CbrMp3Extractor for the mechanism and the fix.
+        return ProgressiveMediaSource.Factory(factory, CbrMp3Extractor.wrapping(extractors))
             .createMediaSource(mediaItem)
     }
 
