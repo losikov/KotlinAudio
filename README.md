@@ -1,3 +1,14 @@
+# DEPRECATED
+
+**This repository is no longer maintained or consumed.** As of 2026-09-10 the player source was
+vendored into the `losikov/react-native-track-player` fork
+(branch `dev-android-auto-turbo-media3`, `android/src/main/java/com/doublesymmetry/kotlinaudio/`)
+and is being migrated there from ExoPlayer 2.19.1 to AndroidX Media3. The JitPack artifact built
+from this repo (last pin: `c98a0dd28492489b3ad52bf431312e79e2f096ab`) stays available for rollback
+only. Do not open PRs or push fixes here; make them in the RNTP fork.
+
+---
+
 # KotlinAudio
 
 [![](https://jitpack.io/v/doublesymmetry/KotlinAudio.svg)](https://jitpack.io/#doublesymmetry/KotlinAudio)
